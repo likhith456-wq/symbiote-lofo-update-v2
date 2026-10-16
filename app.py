@@ -13,7 +13,11 @@ from transformers import pipeline
 
 import database as db
 from catalog import CATEGORIES, ITEMS, identify_from_text
-from email_delivery import password_reset_email_configured, send_password_reset_email
+from email_delivery import (
+    EmailDeliveryError,
+    password_reset_email_configured,
+    send_password_reset_email,
+)
 from identity_ocr import IdentityOCRUnavailable, check_identity_document
 from matching import rank_lost_found_matches
 from security import (
@@ -435,6 +439,9 @@ def render_login_page():
                 else:
                     try:
                         send_password_reset_email(reset_email.strip(), code)
+                    except EmailDeliveryError as error:
+                        db.invalidate_password_reset_code(DB_PATH, reset_email, code)
+                        st.error(str(error))
                     except (OSError, ValueError, smtplib.SMTPException) as error:
                         db.invalidate_password_reset_code(DB_PATH, reset_email, code)
                         st.error(

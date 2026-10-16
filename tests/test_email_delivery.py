@@ -1,9 +1,14 @@
 import json
 import os
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import MagicMock, patch
 
-from email_delivery import password_reset_email_configured, send_password_reset_email
+from email_delivery import (
+    EmailDeliveryError,
+    password_reset_email_configured,
+    send_password_reset_email,
+)
 
 
 class EmailDeliveryTests(unittest.TestCase):
@@ -71,6 +76,46 @@ class EmailDeliveryTests(unittest.TestCase):
     def test_missing_email_provider_configuration_raises(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ValueError):
+                send_password_reset_email("student@example.edu", "042817")
+
+    @patch("email_delivery.urlopen")
+    def test_resend_http_error_shows_safe_configuration_hint(self, urlopen):
+        urlopen.side_effect = HTTPError(
+            "https://api.resend.com/emails",
+            401,
+            "Unauthorized",
+            {},
+            None,
+        )
+        with patch.dict(
+            os.environ,
+            {"RESEND_API_KEY": "test-key", "RESEND_FROM_EMAIL": "noreply@example.com"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                EmailDeliveryError,
+                "Resend rejected the API key \\(HTTP 401\\)",
+            ):
+                send_password_reset_email("student@example.edu", "042817")
+
+    @patch("email_delivery.urlopen")
+    def test_resend_sender_error_has_verified_domain_hint(self, urlopen):
+        urlopen.side_effect = HTTPError(
+            "https://api.resend.com/emails",
+            422,
+            "Unprocessable Entity",
+            {},
+            None,
+        )
+        with patch.dict(
+            os.environ,
+            {"RESEND_API_KEY": "test-key", "RESEND_FROM_EMAIL": "noreply@example.com"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                EmailDeliveryError,
+                "valid address on a verified domain",
+            ):
                 send_password_reset_email("student@example.edu", "042817")
 
 

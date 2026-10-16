@@ -2,7 +2,12 @@ import json
 import os
 import smtplib
 from email.message import EmailMessage
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+
+class EmailDeliveryError(ValueError):
+    pass
 
 
 def password_reset_email_configured():
@@ -43,8 +48,34 @@ def send_password_reset_email(recipient, code):
             },
             method="POST",
         )
-        with urlopen(request, timeout=15) as response:
-            response.read()
+        try:
+            with urlopen(request, timeout=15) as response:
+                response.read()
+        except HTTPError as error:
+            messages = {
+                401: (
+                    "Resend rejected the API key (HTTP 401). Check that "
+                    "RESEND_API_KEY is valid and active."
+                ),
+                403: (
+                    "Resend denied the request (HTTP 403). Check the API key "
+                    "permissions and verify the sender domain."
+                ),
+                422: (
+                    "Resend rejected the email details (HTTP 422). Check that "
+                    "RESEND_FROM_EMAIL is a valid address on a verified domain."
+                ),
+                429: (
+                    "Resend rate-limited the request (HTTP 429). Wait briefly "
+                    "before requesting another code."
+                ),
+            }
+            message = messages.get(
+                error.code,
+                f"Resend could not send the email (HTTP {error.code}). "
+                "Check the Resend service and configuration.",
+            )
+            raise EmailDeliveryError(message) from error
         return
 
     host = os.getenv("SMTP_HOST", "").strip()
