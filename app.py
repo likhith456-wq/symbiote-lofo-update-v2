@@ -1,5 +1,6 @@
 import os
 import re
+import smtplib
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,8 @@ from matching import rank_lost_found_matches
 from security import (
     AuthorizationError,
     create_qr_token,
+    create_recovery_codes,
+    create_verification_code,
     hash_password,
     hash_qr_token,
     is_under_age,
@@ -239,8 +242,14 @@ def render_public_qr_page(token):
 def render_login_page():
     st.title("🔐 Symbiote Lofo AI")
     st.caption("Student and administrator access. Date of birth is checked for age and not saved to your account.")
-    student_login_tab, admin_login_tab, student_signup_tab, admin_signup_tab = st.tabs(
-        ["Student login", "Admin login", "Student signup", "Admin signup"]
+    (
+        student_login_tab,
+        admin_login_tab,
+        student_signup_tab,
+        admin_signup_tab,
+        forgot_password_tab,
+    ) = st.tabs(
+        ["Student login", "Admin login", "Student signup", "Admin signup", "Forgot password"]
     )
     with student_login_tab:
         with st.form("student_login_form"):
@@ -401,6 +410,80 @@ def render_login_page():
                             st.session_state["last_activity"] = time.time()
                             st.success("Administrator account created.")
                             st.rerun()
+    with forgot_password_tab:
+        st.subheader("Reset your password")
+        st.caption(
+            "Request a six-digit code by email, or use a backup recovery code generated "
+            "in My Profile."
+        )
+        with st.form("password_reset_email_form"):
+            reset_email = st.text_input("Account email", max_chars=254)
+            request_submitted = st.form_submit_button("Email me a verification code")
+        if request_submitted:
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", reset_email.strip()):
+                st.warning("Enter a valid email address.")
+            elif not os.getenv("SMTP_HOST"):
+                st.error(
+                    "Email recovery is not configured. Use a backup recovery code or "
+                    "ask an administrator to configure SMTP."
+                )
+            else:
+                code = create_verification_code()
+                if not db.request_password_reset_code(DB_PATH, reset_email, code):
+                    st.info("Please wait before requesting another code or trying again.")
+                else:
+                    try:
+                        send_password_reset_email(reset_email.strip(), code)
+                    except (OSError, ValueError, smtplib.SMTPException) as error:
+                        db.invalidate_password_reset_code(DB_PATH, reset_email, code)
+                        st.error(
+                            "The verification email could not be sent. Check SMTP "
+                            f"configuration and try again ({type(error).__name__})."
+                        )
+                    else:
+                        st.success(
+                            "If this email is registered, a verification code has been sent."
+                        )
+
+        reset_method = st.radio(
+            "Verification method",
+            ["Email code", "Backup recovery code"],
+            horizontal=True,
+        )
+        with st.form("password_reset_form", clear_on_submit=True):
+            reset_email = st.text_input("Account email", max_chars=254, key="reset_account_email")
+            credential_label = (
+                "Email verification code"
+                if reset_method == "Email code"
+                else "Backup recovery code"
+            )
+            credential = st.text_input(
+                credential_label,
+                max_chars=6 if reset_method == "Email code" else 64,
+            )
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm new password", type="password")
+            reset_submitted = st.form_submit_button("Reset password")
+        if reset_submitted:
+            if not reset_email.strip() or not credential:
+                st.warning("Enter your account email and verification credential.")
+            elif len(new_password) < 12:
+                st.warning("Use a password with at least 12 characters.")
+            elif new_password != confirm_password:
+                st.warning("Passwords do not match.")
+            elif db.reset_password(
+                DB_PATH,
+                reset_email,
+                credential.strip(),
+                hash_password(new_password),
+                method="email" if reset_method == "Email code" else "recovery",
+            ):
+                st.success("Password reset. You can now sign in with your new password.")
+            else:
+                st.error(
+                    "Password reset failed. Check your code, ensure it has not expired, "
+                    "and try again."
+                )
 
 
 def render_profile_page(user):
@@ -441,6 +524,43 @@ def render_profile_page(user):
         else:
             st.session_state.pop("profile_roll_input", None)
             st.success("Profile saved. Your roll number remains private.")
+            st.rerun()
+
+    st.subheader("Account recovery")
+    st.write(
+        f"Unused backup recovery codes: **{db.count_recovery_codes(DB_PATH, user)}**"
+    )
+    st.caption(
+        "Generate new backup codes and store them somewhere private. Each code works "
+        "once; generating a new set invalidates all previous codes."
+    )
+    with st.form("recovery_code_generation_form", clear_on_submit=True):
+        current_password = st.text_input(
+            "Confirm your password to generate codes",
+            type="password",
+        )
+        generate_submitted = st.form_submit_button("Generate backup recovery codes")
+    if generate_submitted:
+        authenticated = db.authenticate_user(DB_PATH, user["email"], current_password)
+        if not authenticated:
+            st.error("Password confirmation failed.")
+        else:
+            recovery_codes = create_recovery_codes()
+            db.replace_recovery_codes(
+                DB_PATH,
+                user,
+                [hash_password(code) for code in recovery_codes],
+            )
+            st.session_state["new_recovery_codes"] = recovery_codes
+            st.rerun()
+    if st.session_state.get("new_recovery_codes"):
+        st.warning(
+            "These codes are shown only in this signed-in session. Save them now; "
+            "they cannot be retrieved later."
+        )
+        st.code("\n".join(st.session_state["new_recovery_codes"]))
+        if st.button("I have saved these codes", key="dismiss_recovery_codes"):
+            st.session_state.pop("new_recovery_codes", None)
             st.rerun()
 
 
@@ -693,6 +813,32 @@ def send_report_notifications(report_id, item_name, user):
             db.log_email(DB_PATH, report_id, recipient, subject, "failed")
         return [type(error).__name__]
     return errors
+
+
+def send_password_reset_email(recipient, code):
+    from email.message import EmailMessage
+
+    host = os.getenv("SMTP_HOST")
+    sender = os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USERNAME", ""))
+    if not host or not sender:
+        raise ValueError("SMTP_HOST and SMTP_FROM_EMAIL (or SMTP_USERNAME) are required.")
+    message = EmailMessage()
+    message["Subject"] = "Your Symbiote Lofo AI password reset code"
+    message["From"] = sender
+    message["To"] = recipient
+    message.set_content(
+        f"Your password reset verification code is: {code}\n\n"
+        "This code expires in 10 minutes. If you did not request a password reset, "
+        "you can ignore this email."
+    )
+    with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
+        if os.getenv("SMTP_USE_TLS", "true").lower() == "true":
+            server.starttls()
+        username = os.getenv("SMTP_USERNAME")
+        password = os.getenv("SMTP_PASSWORD")
+        if username and password:
+            server.login(username, password)
+        server.send_message(message, to_addrs=[recipient])
 
 
 def render_reports_page(user, own_only=False):

@@ -133,10 +133,121 @@ class DatabaseTests(unittest.TestCase):
                 conn.execute("SELECT COUNT(*) FROM report_status_history").fetchone()[0],
                 2,
             )
-        backups = list((self.root / "backups").glob("migration-v3-*"))
+        backups = list((self.root / "backups").glob("migration-v4-*"))
         self.assertEqual(len(backups), 1)
         self.assertTrue((backups[0] / self.db_path.name).is_file())
-        self.assertEqual((backups[0] / "item_photos" / "legacy.jpg").read_bytes(), b"legacy photo")
+        self.assertEqual(
+            (backups[0] / "item_photos" / "legacy.jpg").read_bytes(), b"legacy photo"
+        )
+
+    def test_email_code_can_reset_password_and_is_rate_limited(self):
+        self.assertTrue(
+            database.request_password_reset_code(
+                self.db_path, "student@example.edu", "042817", now=1000
+            )
+        )
+        self.assertFalse(
+            database.request_password_reset_code(
+                self.db_path, "student@example.edu", "123456", now=1030
+            )
+        )
+        self.assertFalse(
+            database.reset_password(
+                self.db_path,
+                "student@example.edu",
+                "042817",
+                hash_password("new-password-123"),
+                method="email",
+                now=1601,
+            )
+        )
+        self.assertTrue(
+            database.request_password_reset_code(
+                self.db_path, "student@example.edu", "654321", now=1601
+            )
+        )
+        self.assertTrue(
+            database.reset_password(
+                self.db_path,
+                "student@example.edu",
+                "654321",
+                hash_password("new-password-123"),
+                method="email",
+                now=1602,
+            )
+        )
+        self.assertFalse(
+            database.request_password_reset_code(
+                self.db_path, "student@example.edu", "789012", now=1620
+            )
+        )
+        self.assertIsNotNone(
+            database.authenticate_user(
+                self.db_path, "student@example.edu", "new-password-123"
+            )
+        )
+        self.assertIsNone(
+            database.authenticate_user(
+                self.db_path, "student@example.edu", "legacy-password"
+            )
+        )
+
+    def test_wrong_reset_codes_are_limited_and_recovery_codes_are_one_time(self):
+        self.assertTrue(
+            database.request_password_reset_code(
+                self.db_path, "student@example.edu", "246810", now=1000
+            )
+        )
+        for attempt in range(5):
+            self.assertFalse(
+                database.reset_password(
+                    self.db_path,
+                    "student@example.edu",
+                    "wrong",
+                    hash_password("new-password-123"),
+                    method="email",
+                    now=1001 + attempt,
+                )
+            )
+        self.assertFalse(
+            database.reset_password(
+                self.db_path,
+                "student@example.edu",
+                "246810",
+                hash_password("new-password-123"),
+                method="email",
+                now=1006,
+            )
+        )
+
+        recovery_code = "long-random-recovery-code"
+        database.replace_recovery_codes(
+            self.db_path,
+            self.student,
+            [hash_password(recovery_code), hash_password("another-code")],
+        )
+        self.assertEqual(database.count_recovery_codes(self.db_path, self.student), 2)
+        self.assertTrue(
+            database.reset_password(
+                self.db_path,
+                "student@example.edu",
+                recovery_code,
+                hash_password("recovered-password-123"),
+                method="recovery",
+                now=5000,
+            )
+        )
+        self.assertEqual(database.count_recovery_codes(self.db_path, self.student), 1)
+        self.assertFalse(
+            database.reset_password(
+                self.db_path,
+                "student@example.edu",
+                recovery_code,
+                hash_password("another-password-123"),
+                method="recovery",
+                now=5001,
+            )
+        )
 
     def test_student_queries_never_return_roll_number_or_other_reporter_id(self):
         database.update_student_profile(
@@ -261,7 +372,7 @@ class DatabaseTests(unittest.TestCase):
             )
             self.assertEqual(
                 conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
-                3,
+                4,
             )
 
     def test_qr_tokens_are_private_and_revocable(self):

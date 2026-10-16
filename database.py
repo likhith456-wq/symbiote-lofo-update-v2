@@ -16,7 +16,7 @@ from security import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 WORKFLOW_STATUSES = (
     "Open",
     "Under Review",
@@ -320,6 +320,37 @@ def _migrate_v3(conn):
     conn.execute("DROP TABLE IF EXISTS admin_signup_otps")
 
 
+def _migrate_v4(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_codes (
+            email TEXT PRIMARY KEY,
+            code_hash TEXT,
+            expires_at INTEGER,
+            attempts_left INTEGER NOT NULL,
+            window_started_at INTEGER NOT NULL,
+            send_count INTEGER NOT NULL,
+            last_sent_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recovery_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            code_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            used_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recovery_codes_user "
+        "ON recovery_codes(user_id, used_at)"
+    )
+
+
 def migrate_database(db_path, data_dir=None, *, backup=True):
     db_path = Path(db_path).resolve()
     data_dir = Path(data_dir or db_path.parent).resolve()
@@ -385,6 +416,13 @@ def migrate_database(db_path, data_dir=None, *, backup=True):
             conn.execute(
                 "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
                 (3, utc_now()),
+            )
+            version = 3
+        if version < 4:
+            _migrate_v4(conn)
+            conn.execute(
+                "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+                (4, utc_now()),
             )
         _ensure_roll_number_unique_index(conn)
     return SCHEMA_VERSION
@@ -582,6 +620,187 @@ def get_student_profile(db_path, principal):
             (user["id"],),
         ).fetchone()
     return dict(row)
+
+
+def replace_recovery_codes(db_path, principal, code_hashes):
+    if not code_hashes:
+        raise ValueError("At least one recovery code is required.")
+    with connection(db_path, begin_immediate=True) as conn:
+        user = _require_user(conn, principal)
+        conn.execute("DELETE FROM recovery_codes WHERE user_id = ?", (user["id"],))
+        conn.executemany(
+            """
+            INSERT INTO recovery_codes(user_id, code_hash, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [(user["id"], code_hash, utc_now()) for code_hash in code_hashes],
+        )
+
+
+def count_recovery_codes(db_path, principal):
+    with connection(db_path) as conn:
+        user = _require_user(conn, principal)
+        return conn.execute(
+            "SELECT COUNT(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL",
+            (user["id"],),
+        ).fetchone()[0]
+
+
+def request_password_reset_code(db_path, email, code, *, now=None):
+    from security import hash_password
+
+    email = email.strip().lower()
+    now = int(time.time() if now is None else now)
+    with connection(db_path, begin_immediate=True) as conn:
+        row = conn.execute(
+            "SELECT * FROM password_reset_codes WHERE email = ?", (email,)
+        ).fetchone()
+        if row and now - row["window_started_at"] < 3600:
+            if row["send_count"] >= 3 or now - row["last_sent_at"] < 60:
+                return False
+            if row["attempts_left"] <= 0:
+                return False
+            window_started_at = row["window_started_at"]
+            send_count = row["send_count"]
+            attempts_left = row["attempts_left"]
+        else:
+            window_started_at = now
+            send_count = 0
+            attempts_left = 5
+        conn.execute(
+            """
+            INSERT INTO password_reset_codes(
+                email, code_hash, expires_at, attempts_left,
+                window_started_at, send_count, last_sent_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                code_hash = excluded.code_hash,
+                expires_at = excluded.expires_at,
+                attempts_left = excluded.attempts_left,
+                window_started_at = excluded.window_started_at,
+                send_count = excluded.send_count,
+                last_sent_at = excluded.last_sent_at
+            """,
+            (
+                email,
+                hash_password(code),
+                now + 600,
+                attempts_left,
+                window_started_at,
+                send_count + 1,
+                now,
+            ),
+        )
+    return True
+
+
+def invalidate_password_reset_code(db_path, email, code):
+    from security import verify_password
+
+    email = email.strip().lower()
+    with connection(db_path, begin_immediate=True) as conn:
+        row = conn.execute(
+            "SELECT code_hash FROM password_reset_codes WHERE email = ?", (email,)
+        ).fetchone()
+        if row and row["code_hash"] and verify_password(code, row["code_hash"])[0]:
+            conn.execute(
+                """
+                UPDATE password_reset_codes
+                SET code_hash = NULL, expires_at = NULL
+                WHERE email = ?
+                """,
+                (email,),
+            )
+
+
+def reset_password(db_path, email, credential, password_hash, *, method, now=None):
+    from security import verify_password
+
+    if method not in {"email", "recovery"}:
+        raise ValueError("Password reset method must be email or recovery.")
+    email = email.strip().lower()
+    now = int(time.time() if now is None else now)
+    with connection(db_path, begin_immediate=True) as conn:
+        reset = conn.execute(
+            "SELECT * FROM password_reset_codes WHERE email = ?", (email,)
+        ).fetchone()
+        if reset and now - reset["window_started_at"] < 3600:
+            attempts_left = reset["attempts_left"]
+            window_started_at = reset["window_started_at"]
+        else:
+            attempts_left = 5
+            window_started_at = now
+        if attempts_left <= 0:
+            return False
+
+        user = conn.execute(
+            "SELECT id FROM users WHERE email = ?", (email,)
+        ).fetchone()
+        code_record = None
+        if method == "email" and reset and reset["code_hash"] and now < reset["expires_at"]:
+            valid = verify_password(credential, reset["code_hash"])[0]
+        elif method == "recovery" and user:
+            for candidate in conn.execute(
+                """
+                SELECT id, code_hash FROM recovery_codes
+                WHERE user_id = ? AND used_at IS NULL
+                """,
+                (user["id"],),
+            ).fetchall():
+                if verify_password(credential, candidate["code_hash"])[0]:
+                    valid = True
+                    code_record = candidate
+                    break
+            else:
+                valid = False
+        else:
+            valid = False
+
+        if not user or not valid:
+            conn.execute(
+                """
+                INSERT INTO password_reset_codes(
+                    email, code_hash, expires_at, attempts_left,
+                    window_started_at, send_count, last_sent_at
+                ) VALUES (?, NULL, NULL, ?, ?, 0, 0)
+                ON CONFLICT(email) DO UPDATE SET
+                    attempts_left = excluded.attempts_left,
+                    window_started_at = excluded.window_started_at
+                """,
+                (email, attempts_left - 1, window_started_at),
+            )
+            return False
+
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (password_hash, user["id"]),
+        )
+        if code_record:
+            conn.execute(
+                "UPDATE recovery_codes SET used_at = ? WHERE id = ?",
+                (utc_now(), code_record["id"]),
+            )
+        if reset:
+            conn.execute(
+                """
+                UPDATE password_reset_codes
+                SET code_hash = NULL, expires_at = NULL
+                WHERE email = ?
+                """,
+                (email,),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO password_reset_codes(
+                    email, code_hash, expires_at, attempts_left,
+                    window_started_at, send_count, last_sent_at
+                ) VALUES (?, NULL, NULL, ?, ?, 0, 0)
+                """,
+                (email, attempts_left, window_started_at),
+            )
+        _audit(conn, user["id"], "password_reset", "user", user["id"])
+    return True
 
 
 def admin_search_students_by_roll(db_path, principal, roll_number, reauthenticated_at):
