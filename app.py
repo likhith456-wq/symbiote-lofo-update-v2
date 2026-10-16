@@ -241,6 +241,12 @@ def render_public_qr_page(token):
 def render_login_page():
     st.title("🔐 Symbiote Lofo AI")
     st.caption("Student and administrator access. Date of birth is checked for age and not saved to your account.")
+    st.warning(
+        "Important: After logging in, go to **My Profile** and generate and securely "
+        "save your backup security codes. This is required for self-service password "
+        "recovery; codes are shown only once, and users without a code must contact "
+        "an administrator for identity-verified help."
+    )
     (
         student_login_tab,
         admin_login_tab,
