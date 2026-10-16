@@ -352,10 +352,6 @@ def render_login_page():
                 ),
                 key="admin_signup_aadhaar_photo",
             )
-            st.caption(
-                "OCR only checks whether printed text matches your entries. It cannot "
-                "authenticate Aadhaar or prove the document is genuine."
-            )
             password = st.text_input("Password", type="password")
             confirmation = st.text_input("Confirm password", type="password")
             submitted = st.form_submit_button(
