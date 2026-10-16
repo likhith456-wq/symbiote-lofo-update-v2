@@ -7,6 +7,8 @@ A Streamlit app for college lost-and-found reports with CLIP image suggestions, 
 Use Python 3.12. From this directory:
 
 ```powershell
+$env:APP_ENV = "development"
+$env:EMAIL_MODE = "development"
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -45,7 +47,7 @@ For persistent SQLite storage, run only one service instance. This app is not co
 
 ## Email notifications and password recovery
 
-Report notifications require `SMTP_HOST` and a sender address (`SMTP_FROM_EMAIL` or `SMTP_USERNAME`). Password resets use only one-time backup security codes generated in My Profile. Users who lose their codes must contact an administrator, who should verify identity using the institution's approved process. Set `ADMIN_EMAILS` to the campus staff recipients.
+Report notifications require `SMTP_HOST` and a sender address (`SMTP_FROM_EMAIL` or `SMTP_USERNAME`). Password resets accept a six-digit code that expires after 10 minutes or a one-time backup security code generated in My Profile. Reset requests and verification attempts are rate-limited, and responses do not disclose whether an account exists. With `EMAIL_MODE=development` and `APP_ENV=development`, no email is sent; the test OTP is displayed in the local Streamlit session. Development email mode is rejected on recognized hosted platforms. For production, use `EMAIL_MODE=production` and configure SMTP; reset delivery uses the email service adapter and can switch to another provider without changing reset logic.
 
 ## Data and accounts
 
@@ -57,7 +59,7 @@ Set `APP_DATA_DIR` to a writable persistent directory to keep the SQLite databas
 - Student signup requires the applicant to be under 23; admin signup requires the applicant to be at least 23. Age is calculated from the entered date of birth, which is used for the check and is not saved in the account database. This DOB check is not Aadhaar verification. Do not collect Aadhaar numbers here; actual Aadhaar verification requires an authorized UIDAI verification provider and separate privacy/legal review.
 - Admin signup accepts a card photo for local OCR text matching against the entered name and DOB. The image is uploaded to this app server for in-memory processing only; it is not written to disk or the database, and OCR is not sent to a third-party service. Extracted text is not displayed, logged, or stored. OCR may be wrong and cannot establish that a document is genuine, belongs to the applicant, or is Aadhaar-authenticated. This is a text consistency check, not identity verification.
 - Profiles can store roll number, department, year of study, and optional phone number. Roll numbers remain strings (including leading zeroes), are never returned by student-facing database queries, and are only searchable by a recently reauthenticated administrator. No roll-number format or uniqueness rule is assumed unless configured below.
-- My Profile lets signed-in users verify their current password and generate ten one-time backup security codes. Save these codes securely; the app stores only password-strength hashes and cannot show them again. Forgot password accepts one unused security code; users who lose their codes must contact an administrator for identity-verified help.
+- My Profile lets signed-in users verify their current password and generate ten one-time backup security codes. Save these codes securely; the app stores only password-strength hashes and cannot show them again. Forgot password accepts an emailed OTP or one unused security code; users who lose their codes and cannot access their email must contact an administrator for identity-verified help.
 - Private registered-item records are visible only to the owner or a recently reauthenticated admin. QR links contain only a random opaque token; the database stores a SHA-256 token hash. Public scans disclose no owner data. A QR is not proof of ownership.
 - Claims and their ownership evidence are private to the claimant and admins. Only a reauthenticated admin can approve/reject claims or complete a handover. SQLite uniqueness constraints and an immediate transaction prevent a second handover for the same Found report.
 - Lost/Found direction is separate from workflow (`Open`, `Under Review`, `Claim Pending`, `Approved for Handover`, `Returned`, `Closed`). Existing completion records migrate to `Closed`; other old reports migrate to `Open`, not `Returned`.
@@ -91,6 +93,8 @@ Set `APP_DATA_DIR` to a writable persistent directory to keep the SQLite databas
 | `SMTP_PASSWORD` | unset | Optional SMTP authentication password/app password |
 | `SMTP_FROM_EMAIL` | `SMTP_USERNAME` | Sender address |
 | `SMTP_USE_TLS` | `true` | Start TLS before SMTP authentication |
+| `APP_ENV` | `production` | Application environment; set to `development` for local-only OTP display |
+| `EMAIL_MODE` | `production` | Email delivery mode: `development` displays local reset OTPs; `production` sends through SMTP |
 | `ADMIN_EMAILS` | unset | Comma-separated admin notification addresses; messages are sent separately |
 | `HF_HOME` | Hugging Face default; `/var/data/huggingface` in Docker | Persistent cache location for downloaded model files |
 | `PORT` | `8501` | Hosting platform port; Docker uses the host-provided value |
@@ -118,6 +122,6 @@ For local admin signup OCR, install Tesseract OCR and ensure `tesseract.exe` is 
 - Streamlit account sessions are not a substitute for institutional SSO, email verification, MFA, or a formal identity lifecycle. Restrict who can reach the deployment, use strong unique passwords, TLS, managed secrets, rate limiting, and a reviewed admin onboarding/offboarding process.
 - Admin sensitive actions require password reauthentication within five minutes. An app-level idle timeout clears the app session, but does not provide a hardened server-side session store or revoke copied browser cookies.
 - QR tokens are bearer links: possession does not reveal the owner, but anyone holding a valid token can submit a found-item note. Rotate/revoke a code if it is shared or exposed.
-- Email delivery is best-effort and failures are shown/logged; it is not a durable queue. Keep SMTP and Resend credentials private, and do not put roll numbers, serial numbers, evidence, or other sensitive details in email content.
+- Email delivery is best-effort and failures are shown/logged; it is not a durable queue. Keep SMTP credentials private, and do not put roll numbers, serial numbers, evidence, or other sensitive details in email content.
 - Similarity weights are configurable heuristics and have not been evaluated against labelled campus data. Human admin verification is always required before handover.
 - Have the college review privacy notices, retention/deletion policy, access controls, threat model, SMTP provider, and data-protection obligations before handling real student data. This implementation is not a claim of production security certification.

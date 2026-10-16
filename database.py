@@ -16,7 +16,8 @@ from security import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+_DUMMY_PASSWORD_RESET_HASH = hash_password("invalid-password-reset-code")
 WORKFLOW_STATUSES = (
     "Open",
     "Under Review",
@@ -351,6 +352,15 @@ def _migrate_v4(conn):
     )
 
 
+def _migrate_v5(conn):
+    _add_column_if_missing(
+        conn,
+        "password_reset_codes",
+        "account_id",
+        "INTEGER REFERENCES users(id) ON DELETE CASCADE",
+    )
+
+
 def migrate_database(db_path, data_dir=None, *, backup=True):
     db_path = Path(db_path).resolve()
     data_dir = Path(data_dir or db_path.parent).resolve()
@@ -423,6 +433,13 @@ def migrate_database(db_path, data_dir=None, *, backup=True):
             conn.execute(
                 "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
                 (4, utc_now()),
+            )
+            version = 4
+        if version < 5:
+            _migrate_v5(conn)
+            conn.execute(
+                "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+                (5, utc_now()),
             )
         _ensure_roll_number_unique_index(conn)
     return SCHEMA_VERSION
@@ -646,11 +663,84 @@ def count_recovery_codes(db_path, principal):
         ).fetchone()[0]
 
 
+def request_password_reset_code(db_path, email, code, *, now=None):
+    from security import hash_password
+
+    email = email.strip().lower()
+    now = int(time.time() if now is None else now)
+    code_hash = hash_password(code)
+    with connection(db_path, begin_immediate=True) as conn:
+        user = conn.execute(
+            "SELECT id FROM users WHERE email = ?", (email,)
+        ).fetchone()
+        row = conn.execute(
+            "SELECT * FROM password_reset_codes WHERE email = ?", (email,)
+        ).fetchone()
+        if row and now - row["window_started_at"] < 3600:
+            if row["send_count"] >= 3 or now - row["last_sent_at"] < 60:
+                return False, bool(user)
+            if row["attempts_left"] <= 0:
+                return False, bool(user)
+            window_started_at = row["window_started_at"]
+            send_count = row["send_count"]
+            attempts_left = row["attempts_left"]
+        else:
+            window_started_at = now
+            send_count = 0
+            attempts_left = 5
+        conn.execute(
+            """
+            INSERT INTO password_reset_codes(
+                email, code_hash, expires_at, attempts_left,
+                window_started_at, send_count, last_sent_at, account_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                code_hash = excluded.code_hash,
+                expires_at = excluded.expires_at,
+                attempts_left = excluded.attempts_left,
+                window_started_at = excluded.window_started_at,
+                send_count = excluded.send_count,
+                last_sent_at = excluded.last_sent_at,
+                account_id = excluded.account_id
+            """,
+            (
+                email,
+                code_hash,
+                now + 600,
+                attempts_left,
+                window_started_at,
+                send_count + 1,
+                now,
+                user["id"] if user else None,
+            ),
+        )
+    return True, bool(user)
+
+
+def invalidate_password_reset_code(db_path, email, code):
+    from security import verify_password
+
+    email = email.strip().lower()
+    with connection(db_path, begin_immediate=True) as conn:
+        row = conn.execute(
+            "SELECT code_hash FROM password_reset_codes WHERE email = ?", (email,)
+        ).fetchone()
+        if row and row["code_hash"] and verify_password(code, row["code_hash"])[0]:
+            conn.execute(
+                """
+                UPDATE password_reset_codes
+                SET code_hash = NULL, expires_at = NULL, account_id = NULL
+                WHERE email = ?
+                """,
+                (email,),
+            )
+
+
 def reset_password(db_path, email, credential, password_hash, *, method, now=None):
     from security import verify_password
 
-    if method != "recovery":
-        raise ValueError("Password reset method must be recovery.")
+    if method not in {"email", "recovery"}:
+        raise ValueError("Password reset method must be email or recovery.")
     email = email.strip().lower()
     now = int(time.time() if now is None else now)
     with connection(db_path, begin_immediate=True) as conn:
@@ -670,7 +760,17 @@ def reset_password(db_path, email, credential, password_hash, *, method, now=Non
             "SELECT id FROM users WHERE email = ?", (email,)
         ).fetchone()
         code_record = None
-        if user:
+        if (
+            method == "email"
+            and user
+            and reset
+            and reset["account_id"] == user["id"]
+            and reset["code_hash"]
+            and reset["expires_at"]
+            and now < reset["expires_at"]
+        ):
+            valid = verify_password(credential, reset["code_hash"])[0]
+        elif method == "recovery" and user:
             for candidate in conn.execute(
                 """
                 SELECT id, code_hash FROM recovery_codes
@@ -685,6 +785,8 @@ def reset_password(db_path, email, credential, password_hash, *, method, now=Non
             else:
                 valid = False
         else:
+            if method == "email":
+                verify_password(credential, _DUMMY_PASSWORD_RESET_HASH)
             valid = False
 
         if not user or not valid:
@@ -711,7 +813,16 @@ def reset_password(db_path, email, credential, password_hash, *, method, now=Non
                 "UPDATE recovery_codes SET used_at = ? WHERE id = ?",
                 (utc_now(), code_record["id"]),
             )
-        if not reset:
+        if reset:
+            conn.execute(
+                """
+                UPDATE password_reset_codes
+                SET code_hash = NULL, expires_at = NULL, account_id = NULL
+                WHERE email = ?
+                """,
+                (email,),
+            )
+        else:
             conn.execute(
                 """
                 INSERT INTO password_reset_codes(

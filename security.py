@@ -83,5 +83,9 @@ def hash_qr_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def create_verification_code():
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
 def create_recovery_codes(count=10):
     return [secrets.token_urlsafe(12) for _ in range(count)]
