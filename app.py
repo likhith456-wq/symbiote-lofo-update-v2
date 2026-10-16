@@ -1,4 +1,3 @@
-import logging
 import os
 import re
 import smtplib
@@ -14,14 +13,12 @@ from transformers import pipeline
 
 import database as db
 from catalog import CATEGORIES, ITEMS, identify_from_text
-from email_service import deliver_password_reset_code, email_mode
 from identity_ocr import IdentityOCRUnavailable, check_identity_document
 from matching import rank_lost_found_matches
 from security import (
     AuthorizationError,
     create_qr_token,
     create_recovery_codes,
-    create_verification_code,
     hash_password,
     hash_qr_token,
     is_under_age,
@@ -246,8 +243,8 @@ def render_login_page():
     st.caption("Student and administrator access. Date of birth is checked for age and not saved to your account.")
     st.warning(
         "Important: After logging in, go to **My Profile** and generate and securely "
-        "save your backup security codes. They are shown only once, so store them "
-        "somewhere secure."
+        "save your backup security codes. They are shown only once. If you lose them, "
+        "contact an administrator for identity-verified help."
     )
     (
         student_login_tab,
@@ -420,67 +417,13 @@ def render_login_page():
     with forgot_password_tab:
         st.subheader("Reset your password")
         st.caption(
-            "Request a six-digit email code, or use a one-time backup security code."
+            "Use a one-time backup security code generated in My Profile. If you no "
+            "longer have a code, contact an administrator for identity-verified help."
         )
-        with st.form("password_reset_request_form"):
-            request_email = st.text_input(
-                "Account email", max_chars=254, key="reset_request_email"
-            )
-            request_submitted = st.form_submit_button("Send reset code")
-        if request_submitted:
-            st.session_state.pop("development_reset_otp", None)
-            st.session_state.pop("development_reset_otp_expires", None)
-            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", request_email.strip()):
-                st.warning("Enter a valid email address.")
-            else:
-                code = create_verification_code()
-                allowed, account_exists = db.request_password_reset_code(
-                    DB_PATH, request_email, code
-                )
-                try:
-                    mode = email_mode()
-                    if allowed and (mode == "development" or account_exists):
-                        development_otp = deliver_password_reset_code(
-                            request_email.strip(), code
-                        )
-                        if development_otp:
-                            st.session_state["development_reset_otp"] = development_otp
-                            st.session_state["development_reset_otp_expires"] = (
-                                time.time() + 600
-                            )
-                            st.session_state["password_reset_email"] = (
-                                request_email.strip()
-                            )
-                except (OSError, ValueError, RuntimeError, smtplib.SMTPException) as error:
-                    db.invalidate_password_reset_code(DB_PATH, request_email, code)
-                    logging.getLogger(__name__).warning(
-                        "Password reset email delivery failed (%s).",
-                        type(error).__name__,
-                    )
-                st.info(
-                    "If an account exists and the request is eligible, follow the "
-                    "instructions to use a reset code."
-                )
-
-        if (
-            st.session_state.get("development_reset_otp")
-            and time.time()
-            < st.session_state.get("development_reset_otp_expires", 0)
-        ):
-            st.warning("Development email mode: use this local test code.")
-            st.code(st.session_state["development_reset_otp"])
-
         with st.form("password_reset_form", clear_on_submit=True):
-            reset_email = st.text_input(
-                "Account email", max_chars=254, key="password_reset_email"
-            )
-            reset_method = st.radio(
-                "Verification method",
-                ["Email code", "Backup security code"],
-                horizontal=True,
-            )
+            reset_email = st.text_input("Account email", max_chars=254, key="reset_account_email")
             credential = st.text_input(
-                "Verification code or backup security code",
+                "Backup security code",
                 max_chars=64,
             )
             new_password = st.text_input("New password", type="password")
@@ -489,10 +432,6 @@ def render_login_page():
         if reset_submitted:
             if not reset_email.strip() or not credential:
                 st.warning("Enter your account email and verification credential.")
-            elif reset_method == "Email code" and not re.fullmatch(
-                r"\d{6}", credential.strip()
-            ):
-                st.warning("Enter the six-digit email code.")
             elif len(new_password) < 12:
                 st.warning("Use a password with at least 12 characters.")
             elif new_password != confirm_password:
@@ -502,15 +441,12 @@ def render_login_page():
                 reset_email,
                 credential.strip(),
                 hash_password(new_password),
-                method="email" if reset_method == "Email code" else "recovery",
+                method="recovery",
             ):
-                st.session_state.pop("development_reset_otp", None)
-                st.session_state.pop("development_reset_otp_expires", None)
                 st.success("Password reset. You can now sign in with your new password.")
             else:
                 st.error(
-                    "Password reset failed. Check your code, ensure it has not expired, "
-                    "and try again."
+                    "Password reset failed. Check your security code and try again."
                 )
 
 
