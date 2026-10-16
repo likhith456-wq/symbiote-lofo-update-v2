@@ -140,45 +140,31 @@ class DatabaseTests(unittest.TestCase):
             (backups[0] / "item_photos" / "legacy.jpg").read_bytes(), b"legacy photo"
         )
 
-    def test_email_code_can_reset_password_and_is_rate_limited(self):
-        self.assertTrue(
-            database.request_password_reset_code(
-                self.db_path, "student@example.edu", "042817", now=1000
-            )
-        )
-        self.assertFalse(
-            database.request_password_reset_code(
-                self.db_path, "student@example.edu", "123456", now=1030
-            )
-        )
-        self.assertFalse(
+    def test_email_reset_method_is_not_supported(self):
+        with self.assertRaisesRegex(ValueError, "must be recovery"):
             database.reset_password(
                 self.db_path,
                 "student@example.edu",
                 "042817",
                 hash_password("new-password-123"),
                 method="email",
-                now=1601,
             )
-        )
-        self.assertTrue(
-            database.request_password_reset_code(
-                self.db_path, "student@example.edu", "654321", now=1601
-            )
+
+    def test_recovery_codes_can_reset_password(self):
+        recovery_code = "long-random-recovery-code"
+        database.replace_recovery_codes(
+            self.db_path,
+            self.student,
+            [hash_password(recovery_code)],
         )
         self.assertTrue(
             database.reset_password(
                 self.db_path,
                 "student@example.edu",
-                "654321",
+                recovery_code,
                 hash_password("new-password-123"),
-                method="email",
+                method="recovery",
                 now=1602,
-            )
-        )
-        self.assertFalse(
-            database.request_password_reset_code(
-                self.db_path, "student@example.edu", "789012", now=1620
             )
         )
         self.assertIsNotNone(
@@ -193,11 +179,6 @@ class DatabaseTests(unittest.TestCase):
         )
 
     def test_wrong_reset_codes_are_limited_and_recovery_codes_are_one_time(self):
-        self.assertTrue(
-            database.request_password_reset_code(
-                self.db_path, "student@example.edu", "246810", now=1000
-            )
-        )
         for attempt in range(5):
             self.assertFalse(
                 database.reset_password(
@@ -205,20 +186,10 @@ class DatabaseTests(unittest.TestCase):
                     "student@example.edu",
                     "wrong",
                     hash_password("new-password-123"),
-                    method="email",
+                    method="recovery",
                     now=1001 + attempt,
                 )
             )
-        self.assertFalse(
-            database.reset_password(
-                self.db_path,
-                "student@example.edu",
-                "246810",
-                hash_password("new-password-123"),
-                method="email",
-                now=1006,
-            )
-        )
 
         recovery_code = "long-random-recovery-code"
         database.replace_recovery_codes(

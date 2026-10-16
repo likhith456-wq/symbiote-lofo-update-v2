@@ -27,14 +27,12 @@ Open the local URL printed by Streamlit. The first image identification download
    | `BOOTSTRAP_ADMIN_EMAIL` | Yes | Email address for the initial administrator |
    | `BOOTSTRAP_ADMIN_PASSWORD` | Yes | Password for the initial administrator, used when creating that account |
    | `ADMIN_EMAILS` | No | Comma-separated recipients for new-report notifications |
-   | `SMTP_HOST` | No | SMTP server host for report notifications and password-reset codes |
+   | `SMTP_HOST` | No | SMTP server host for report notifications |
    | `SMTP_PORT` | No | SMTP port; defaults to `587` |
    | `SMTP_USERNAME` | No | SMTP login |
    | `SMTP_PASSWORD` | No | SMTP password or provider app password |
    | `SMTP_FROM_EMAIL` | No | Sender address; defaults to `SMTP_USERNAME` |
    | `SMTP_USE_TLS` | No | Defaults to `true` |
-   | `RESEND_API_KEY` | No | Resend API key for password-reset emails |
-   | `RESEND_FROM_EMAIL` | No | Verified sender address for Resend password-reset emails |
    | `APP_DATA_DIR` | No | Defaults to `/var/data` in Docker |
    | `HF_HOME` | No | Defaults to `/var/data/huggingface` in Docker |
 
@@ -47,7 +45,7 @@ For persistent SQLite storage, run only one service instance. This app is not co
 
 ## Email notifications and password recovery
 
-Report notifications require `SMTP_HOST` and a sender address (`SMTP_FROM_EMAIL` or `SMTP_USERNAME`). Password-reset codes can be sent through either that SMTP configuration or Resend by setting `RESEND_API_KEY` and a verified `RESEND_FROM_EMAIL`; when both are configured, Resend is used for password resets. Set `ADMIN_EMAILS` to the campus staff recipients. Six-digit reset codes expire after 10 minutes; reset requests use the same response whether or not an account exists, and are rate-limited.
+Report notifications require `SMTP_HOST` and a sender address (`SMTP_FROM_EMAIL` or `SMTP_USERNAME`). Password resets use only one-time backup security codes generated in My Profile. Users who lose their codes must contact an administrator, who should verify identity using the institution's approved process. Set `ADMIN_EMAILS` to the campus staff recipients.
 
 ## Data and accounts
 
@@ -59,7 +57,7 @@ Set `APP_DATA_DIR` to a writable persistent directory to keep the SQLite databas
 - Student signup requires the applicant to be under 23; admin signup requires the applicant to be at least 23. Age is calculated from the entered date of birth, which is used for the check and is not saved in the account database. This DOB check is not Aadhaar verification. Do not collect Aadhaar numbers here; actual Aadhaar verification requires an authorized UIDAI verification provider and separate privacy/legal review.
 - Admin signup accepts a card photo for local OCR text matching against the entered name and DOB. The image is uploaded to this app server for in-memory processing only; it is not written to disk or the database, and OCR is not sent to a third-party service. Extracted text is not displayed, logged, or stored. OCR may be wrong and cannot establish that a document is genuine, belongs to the applicant, or is Aadhaar-authenticated. This is a text consistency check, not identity verification.
 - Profiles can store roll number, department, year of study, and optional phone number. Roll numbers remain strings (including leading zeroes), are never returned by student-facing database queries, and are only searchable by a recently reauthenticated administrator. No roll-number format or uniqueness rule is assumed unless configured below.
-- My Profile lets signed-in users verify their current password and generate ten one-time backup recovery codes. Save these codes securely; the app stores only password-strength hashes and cannot show them again. Forgot password accepts either an emailed verification code or one unused recovery code. Email reset requires SMTP or Resend configuration.
+- My Profile lets signed-in users verify their current password and generate ten one-time backup security codes. Save these codes securely; the app stores only password-strength hashes and cannot show them again. Forgot password accepts one unused security code; users who lose their codes must contact an administrator for identity-verified help.
 - Private registered-item records are visible only to the owner or a recently reauthenticated admin. QR links contain only a random opaque token; the database stores a SHA-256 token hash. Public scans disclose no owner data. A QR is not proof of ownership.
 - Claims and their ownership evidence are private to the claimant and admins. Only a reauthenticated admin can approve/reject claims or complete a handover. SQLite uniqueness constraints and an immediate transaction prevent a second handover for the same Found report.
 - Lost/Found direction is separate from workflow (`Open`, `Under Review`, `Claim Pending`, `Approved for Handover`, `Returned`, `Closed`). Existing completion records migrate to `Closed`; other old reports migrate to `Open`, not `Returned`.
@@ -87,14 +85,12 @@ Set `APP_DATA_DIR` to a writable persistent directory to keep the SQLite databas
 | `MATCH_WEIGHT_CATEGORY` | `0` | Optional non-negative matching weight |
 | `MATCH_WEIGHT_LOCATION` | `0` | Optional non-negative matching weight |
 | `MATCH_WEIGHT_DATE` | `0` | Optional non-negative matching weight |
-| `SMTP_HOST` | unset | SMTP server for notifications and email password-reset codes |
+| `SMTP_HOST` | unset | SMTP server for report notifications |
 | `SMTP_PORT` | `587` | SMTP server port |
 | `SMTP_USERNAME` | unset | Optional SMTP authentication username |
 | `SMTP_PASSWORD` | unset | Optional SMTP authentication password/app password |
 | `SMTP_FROM_EMAIL` | `SMTP_USERNAME` | Sender address |
 | `SMTP_USE_TLS` | `true` | Start TLS before SMTP authentication |
-| `RESEND_API_KEY` | unset | Resend API key for password-reset emails |
-| `RESEND_FROM_EMAIL` | unset | Verified Resend sender address for password-reset emails |
 | `ADMIN_EMAILS` | unset | Comma-separated admin notification addresses; messages are sent separately |
 | `HF_HOME` | Hugging Face default; `/var/data/huggingface` in Docker | Persistent cache location for downloaded model files |
 | `PORT` | `8501` | Hosting platform port; Docker uses the host-provided value |

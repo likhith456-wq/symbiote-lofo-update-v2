@@ -6,7 +6,6 @@ from unittest.mock import patch
 from security import (
     create_qr_token,
     create_recovery_codes,
-    create_verification_code,
     hash_password,
     hash_qr_token,
     is_under_age,
@@ -48,7 +47,6 @@ class SecurityTests(unittest.TestCase):
         self.assertNotEqual(hash_qr_token(token), hash_qr_token(create_qr_token()))
 
     def test_password_recovery_credential_generators(self):
-        self.assertRegex(create_verification_code(), r"^\d{6}$")
         codes = create_recovery_codes()
         self.assertEqual(len(codes), 10)
         self.assertEqual(len(set(codes)), 10)

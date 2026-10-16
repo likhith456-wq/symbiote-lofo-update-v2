@@ -13,18 +13,12 @@ from transformers import pipeline
 
 import database as db
 from catalog import CATEGORIES, ITEMS, identify_from_text
-from email_delivery import (
-    EmailDeliveryError,
-    password_reset_email_configured,
-    send_password_reset_email,
-)
 from identity_ocr import IdentityOCRUnavailable, check_identity_document
 from matching import rank_lost_found_matches
 from security import (
     AuthorizationError,
     create_qr_token,
     create_recovery_codes,
-    create_verification_code,
     hash_password,
     hash_qr_token,
     is_under_age,
@@ -418,56 +412,14 @@ def render_login_page():
     with forgot_password_tab:
         st.subheader("Reset your password")
         st.caption(
-            "Request a six-digit code by email, or use a backup recovery code generated "
-            "in My Profile."
-        )
-        with st.form("password_reset_email_form"):
-            reset_email = st.text_input("Account email", max_chars=254)
-            request_submitted = st.form_submit_button("Email me a verification code")
-        if request_submitted:
-            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", reset_email.strip()):
-                st.warning("Enter a valid email address.")
-            elif not password_reset_email_configured():
-                st.error(
-                    "Email recovery is not configured. Use a backup recovery code or "
-                    "ask an administrator to configure email delivery."
-                )
-            else:
-                code = create_verification_code()
-                if not db.request_password_reset_code(DB_PATH, reset_email, code):
-                    st.info("Please wait before requesting another code or trying again.")
-                else:
-                    try:
-                        send_password_reset_email(reset_email.strip(), code)
-                    except EmailDeliveryError as error:
-                        db.invalidate_password_reset_code(DB_PATH, reset_email, code)
-                        st.error(str(error))
-                    except (OSError, ValueError, smtplib.SMTPException) as error:
-                        db.invalidate_password_reset_code(DB_PATH, reset_email, code)
-                        st.error(
-                            "The verification email could not be sent. Check SMTP "
-                            f"configuration and try again ({type(error).__name__})."
-                        )
-                    else:
-                        st.success(
-                            "If this email is registered, a verification code has been sent."
-                        )
-
-        reset_method = st.radio(
-            "Verification method",
-            ["Email code", "Backup recovery code"],
-            horizontal=True,
+            "Use a one-time backup security code generated in My Profile. If you no "
+            "longer have a code, contact an administrator for identity-verified help."
         )
         with st.form("password_reset_form", clear_on_submit=True):
             reset_email = st.text_input("Account email", max_chars=254, key="reset_account_email")
-            credential_label = (
-                "Email verification code"
-                if reset_method == "Email code"
-                else "Backup recovery code"
-            )
             credential = st.text_input(
-                credential_label,
-                max_chars=6 if reset_method == "Email code" else 64,
+                "Backup security code",
+                max_chars=64,
             )
             new_password = st.text_input("New password", type="password")
             confirm_password = st.text_input("Confirm new password", type="password")
@@ -484,13 +436,12 @@ def render_login_page():
                 reset_email,
                 credential.strip(),
                 hash_password(new_password),
-                method="email" if reset_method == "Email code" else "recovery",
+                method="recovery",
             ):
                 st.success("Password reset. You can now sign in with your new password.")
             else:
                 st.error(
-                    "Password reset failed. Check your code, ensure it has not expired, "
-                    "and try again."
+                    "Password reset failed. Check your security code and try again."
                 )
 
 
@@ -536,10 +487,10 @@ def render_profile_page(user):
 
     st.subheader("Account recovery")
     st.write(
-        f"Unused backup recovery codes: **{db.count_recovery_codes(DB_PATH, user)}**"
+        f"Unused backup security codes: **{db.count_recovery_codes(DB_PATH, user)}**"
     )
     st.caption(
-        "Generate new backup codes and store them somewhere private. Each code works "
+        "Generate new backup security codes and store them somewhere private. Each code works "
         "once; generating a new set invalidates all previous codes."
     )
     with st.form("recovery_code_generation_form", clear_on_submit=True):
@@ -547,7 +498,7 @@ def render_profile_page(user):
             "Confirm your password to generate codes",
             type="password",
         )
-        generate_submitted = st.form_submit_button("Generate backup recovery codes")
+        generate_submitted = st.form_submit_button("Generate backup security codes")
     if generate_submitted:
         authenticated = db.authenticate_user(DB_PATH, user["email"], current_password)
         if not authenticated:
