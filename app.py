@@ -13,6 +13,7 @@ from transformers import pipeline
 
 import database as db
 from catalog import CATEGORIES, ITEMS, identify_from_text
+from email_delivery import password_reset_email_configured, send_password_reset_email
 from identity_ocr import IdentityOCRUnavailable, check_identity_document
 from matching import rank_lost_found_matches
 from security import (
@@ -422,10 +423,10 @@ def render_login_page():
         if request_submitted:
             if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", reset_email.strip()):
                 st.warning("Enter a valid email address.")
-            elif not os.getenv("SMTP_HOST"):
+            elif not password_reset_email_configured():
                 st.error(
                     "Email recovery is not configured. Use a backup recovery code or "
-                    "ask an administrator to configure SMTP."
+                    "ask an administrator to configure email delivery."
                 )
             else:
                 code = create_verification_code()
@@ -813,32 +814,6 @@ def send_report_notifications(report_id, item_name, user):
             db.log_email(DB_PATH, report_id, recipient, subject, "failed")
         return [type(error).__name__]
     return errors
-
-
-def send_password_reset_email(recipient, code):
-    from email.message import EmailMessage
-
-    host = os.getenv("SMTP_HOST")
-    sender = os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USERNAME", ""))
-    if not host or not sender:
-        raise ValueError("SMTP_HOST and SMTP_FROM_EMAIL (or SMTP_USERNAME) are required.")
-    message = EmailMessage()
-    message["Subject"] = "Your Symbiote Lofo AI password reset code"
-    message["From"] = sender
-    message["To"] = recipient
-    message.set_content(
-        f"Your password reset verification code is: {code}\n\n"
-        "This code expires in 10 minutes. If you did not request a password reset, "
-        "you can ignore this email."
-    )
-    with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
-        if os.getenv("SMTP_USE_TLS", "true").lower() == "true":
-            server.starttls()
-        username = os.getenv("SMTP_USERNAME")
-        password = os.getenv("SMTP_PASSWORD")
-        if username and password:
-            server.login(username, password)
-        server.send_message(message, to_addrs=[recipient])
 
 
 def render_reports_page(user, own_only=False):
