@@ -243,9 +243,8 @@ def render_login_page():
     st.caption("Student and administrator access. Date of birth is checked for age and not saved to your account.")
     st.warning(
         "Important: After logging in, go to **My Profile** and generate and securely "
-        "save your backup security codes. This is required for self-service password "
-        "recovery; codes are shown only once, and users without a code must contact "
-        "an administrator for identity-verified help."
+        "save your backup security codes. They are shown only once. If you lose them, "
+        "contact an administrator for identity-verified help."
     )
     (
         student_login_tab,
