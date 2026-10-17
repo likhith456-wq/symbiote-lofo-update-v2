@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import smtplib
@@ -13,6 +14,7 @@ from transformers import pipeline
 
 import database as db
 from catalog import CATEGORIES, ITEMS, identify_from_text
+from data_reset import reset_app_data_once
 from identity_ocr import IdentityOCRUnavailable, check_identity_document
 from matching import rank_lost_found_matches
 from security import (
@@ -93,6 +95,14 @@ def apply_theme():
 
 @st.cache_resource
 def prepare_database(db_path, data_dir):
+    if reset_app_data_once(
+        data_dir,
+        os.getenv("RESET_APP_DATA_TOKEN", ""),
+        os.getenv("RESET_APP_DATA_CONFIRM", ""),
+    ):
+        logging.getLogger(__name__).warning(
+            "Application data reset completed before database initialization."
+        )
     db.migrate_database(db_path, data_dir)
     return True
 

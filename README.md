@@ -43,6 +43,10 @@ Open the local URL printed by Streamlit. The first image identification download
 
 For persistent SQLite storage, run only one service instance. This app is not configured for multiple replicas or concurrent shared-disk database access. Keep the admin password and SMTP credentials private, and rotate them in the provider if they are exposed.
 
+## Reset all application data
+
+To intentionally start with a fresh database on the next deployment, set both `RESET_APP_DATA_CONFIRM=DELETE_ALL_APP_DATA` and `RESET_APP_DATA_TOKEN` to a newly generated random value of at least 32 characters in the service environment, then deploy. On startup, the app removes only `lost_found.db` and its SQLite sidecars, `item_photos`, and `backups` under `APP_DATA_DIR`; it keeps the downloaded model cache. A marker on the persistent data disk ensures the same token resets data only once, including across restarts. Afterward, remove the confirmation and token settings. For another reset, use a new random token. Back up anything you may need first; deleted application data cannot be recovered by the app.
+
 ## Email notifications and password recovery
 
 Report notifications require `SMTP_HOST` and a sender address (`SMTP_FROM_EMAIL` or `SMTP_USERNAME`). Password resets use only one-time backup security codes generated in My Profile. Users who lose their codes must contact an administrator, who should verify identity using the institution's approved process. Set `ADMIN_EMAILS` to the campus staff recipients.
@@ -91,6 +95,8 @@ Set `APP_DATA_DIR` to a writable persistent directory to keep the SQLite databas
 | `SMTP_PASSWORD` | unset | Optional SMTP authentication password/app password |
 | `SMTP_FROM_EMAIL` | `SMTP_USERNAME` | Sender address |
 | `SMTP_USE_TLS` | `true` | Start TLS before SMTP authentication |
+| `RESET_APP_DATA_CONFIRM` | unset | Must equal `DELETE_ALL_APP_DATA` to explicitly authorize a one-time app-data reset |
+| `RESET_APP_DATA_TOKEN` | unset | Unique random value of at least 32 characters; the same token will not reset data twice |
 | `ADMIN_EMAILS` | unset | Comma-separated admin notification addresses; messages are sent separately |
 | `HF_HOME` | Hugging Face default; `/var/data/huggingface` in Docker | Persistent cache location for downloaded model files |
 | `PORT` | `8501` | Hosting platform port; Docker uses the host-provided value |
