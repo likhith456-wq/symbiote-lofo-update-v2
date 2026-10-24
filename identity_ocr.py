@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import subprocess
 import unicodedata
@@ -10,8 +11,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from security import meets_minimum_age
 
 
-MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
-MAX_DOCUMENT_PIXELS = 20_000_000
+MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_BYTES", str(1 << 40)))
+MAX_DOCUMENT_PIXELS = int(os.getenv("MAX_DOCUMENT_PIXELS", str(1 << 52)))
 DATE_PATTERNS = (
     re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)"),
     re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)"),
